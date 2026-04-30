@@ -1,0 +1,180 @@
+Plan: Convert Rainy Day Sort to Three.js (Isometric 3D)
+Context
+The game is currently a DOM/CSS-based water-sort puzzle rendered entirely with HTML <div> elements and CSS gradients — no canvas, no WebGL. Converting to Three.js replaces the rendering layer with a WebGL canvas showing an isometric 3D scene while keeping all game logic, audio, and HTML/CSS overlay (buttons, score, mascot) exactly as they are. The goal is a visual upgrade to stylized isometric 3D glass tubes with layered colored liquid, shadows, and smooth GSAP-driven animations.
+User choices:
+	•	Visual style: Orthographic camera, 45° azimuth, ~18° elevation (shallow front-on — just enough to read depth, not top-down)
+	•	UI controls: keep as HTML/CSS overlay over the canvas
+	•	Build system: introduce npm + Vite
+	•	Mascot: keep existing SVG overlay, no changes
+	•	Delivery: new GitHub repository (joysome-creations/rainy-day-sort-3d or similar); original repo untouched
+
+
+#  Target Project Structure
+rainy-day-sort/
+├── package.json            ← new: vite + three + gsap
+├── vite.config.js          ← new
+├── index.html              ← gutted to shell: canvas + overlay DOM only
+├── public/
+│   ├── favicon.png
+│   ├── icon.png
+│   ├── manifest.json
+│   ├── robots.txt
+│   └── service-worker.js
+└── src/
+    ├── main.js             ← entry: init scene → load level → start loop
+    ├── constants.js        ← TUBE_CAPACITY, ZEN_CAPACITY, HISTORY_MAX, etc.
+    ├── state.js            ← all mutable globals (tubes, selected, moves, history, …)
+    ├── palette.js          ← PALETTE, hexToHsl, hslToHex, buildZenShades, buildColorPalette, …
+    ├── levels.js           ← LEVEL_CONFIGS, generateLevel, loadLevel, loadZen, loadGravity, loadSand
+    ├── logic.js            ← canPour, doPour, isTubeComplete, checkWin, handleTubeClick, …
+    ├── audio.js            ← Web Audio API sounds (verbatim, no changes)
+    ├── ui.js               ← DOM overlay: setMsg, updateBestDisplay, confetti, mascot, toggleNightMode
+    ├── renderer.js         ← new render() shim: reads state → calls syncAllTubeGroups() + AnimationSystem
+    └── scene/
+        ├── SceneManager.js     ← WebGLRenderer, OrthographicCamera, Scene, lights, animate loop
+        ├── TubeMeshBuilder.js  ← geometry factories: makeTubeBody, makeRim, makeStopper, makeLiquidLayer, makeLockOverlay
+        ├── TubeGroup.js        ← class per tube; syncToState(tubeData, flags) updates meshes
+        ├── BoardLayout.js      ← gridToWorld(col, row, gridCols, gridRows), computeFrustum(…)
+        ├── Interaction.js      ← Raycaster, pointerdown → handleTubeClick(idx)
+        └── AnimationSystem.js  ← GSAP tweens: animBounce, animShake, animComplete, animUnlock, animGravityFlip, animLiquidRise
+
+
+#  Key Technical Decisions
+Camera (shallow isometric orthographic)
+// In SceneManager.js
+// Azimuth 45° around Y, elevation ~15–20° (not true isometric ~35°)
+// This gives a "slightly angled" front view — tubes read as 3D but the
+// player primarily sees the front face, not the top.
+const AZIMUTH   = Math.PI / 4;          // 45° around Y
+const ELEVATION = Math.PI / 10;         // ~18° — tweak between PI/12 (15°) and PI/9 (20°)
+const D = 20;
+camera = new THREE.OrthographicCamera(left, right, top, bottom, 0.1, 500);
+camera.position.set(
+  D * Math.cos(ELEVATION) * Math.sin(AZIMUTH),
+  D * Math.sin(ELEVATION),
+  D * Math.cos(ELEVATION) * Math.cos(AZIMUTH)
+);
+camera.lookAt(0, 0, 0);
+
+
+At 18° elevation the camera sits much closer to horizontal than true isometric (35.26°). The tops of tubes are barely visible — just enough to confirm depth — while the colored liquid layers on the front face are the main visual. Frustum bounds computed by BoardLayout.computeFrustum() based on grid size; recalculated on every resize.
+Tube Geometry and Materials
+	•	Body: RoundedBoxGeometry(0.44, 1.44, 0.44, 4, 0.06) (from three/addons/geometries/RoundedBoxGeometry.js)
+	•	Glass material: MeshPhysicalMaterial({ transmission: 0.88, ior: 1.45, roughness: 0.06, depthWrite: false, renderOrder: 2 }) — on mobile, fall back to MeshStandardMaterial({ transparent: true, opacity: 0.28 }) to avoid expensive transmission pass
+	•	Liquid layers: BoxGeometry(0.36, 0.36, 0.36) per layer slot (4 slots per tube), MeshStandardMaterial({ color: THREE.Color(hex), roughness: 0.25, transparent: true, opacity: 0.88, renderOrder: 1 }); liquid is narrower than tube so no z-fighting
+	•	Stopper: BoxGeometry(0.46, 0.10, 0.46) at tube top, visible only when isTubeComplete
+	•	Lock overlay: RoundedBoxGeometry(0.50, 1.50, 0.50) with MeshPhysicalMaterial({ color: 0xb8d8f0, transmission: 0.5, opacity: 0.42 }); lock-progress dots are small spheres above the tube
+	•	Selected state: lift group.position.y += 0.22; set glassMat.emissive = 0x5f918e at emissiveIntensity: 0.18
+
+#  Lighting (“warm from above-front”)
+
+
+AmbientLight
+0xfff8e7
+0.55
+
+DirectionalLight (sun)
+0xfff4d6
+1.1
+(-3, 8, 5) - casts shadow
+
+DirectionalLight (rim)
+0xd0eaff
+0.28
+(4,3, -6)
+
+Night mode: SceneManager.setNightMode(on) swaps light colors/intensities.
+Background
+renderer uses alpha: true — body CSS background (diagonal-line pattern) shows through canvas. No Three.js background mesh needed.
+
+#  Layout Mapping
+// BoardLayout.js
+const TUBE_SPACING_X = 0.56;  // tube 0.44 + gap 0.12
+const TUBE_SPACING_Z = 0.80;
+
+function gridToWorld(col, row, gridCols, gridRows) {
+  return {
+    x: (col - (gridCols - 1) / 2) * TUBE_SPACING_X,
+    y: 0,
+    z: (row - (gridRows - 1) / 2) * TUBE_SPACING_Z,
+  };
+}
+
+
+“Columns” → X axis, “rows” → Z axis in isometric view.
+Interaction (Raycasting)
+All meshes in a TubeGroup carry userData.tubeIndex = idx. pointerdown on canvas → raycaster.intersectObjects(allTubeMeshes) → intersects[0].object.userData.tubeIndex → handleTubeClick(idx). Glass transparency does not interfere (raycaster tests geometry, not pixels — which is what we want).
+
+Animation System (GSAP)
+CSS animation -
+3D equivalent
+
+tube-bounce (0.42s)
+Y-axis translate timeline on group.
+
+tube-shake (0.28s)
+X-axis oscillation on group-position
+
+tube-complete-pulse (0.55s)
+Scale + Y + emissive glow on glassMat 
+
+tube-unlock (0.42s)
+Full Y-rotation + scale pulse
+
+gravity-shake + flip
+Shake → fade liquid opacity to 0 → mutate arrays -> sync to state -> fade to black -> shake
+
+Pour (new)
+animLiquidRise: newly visible layer scales in
+
+GSAP auto-hooks into requestAnimationFrame; no manual ticker needed. Render loop: if (needsRender || gsap.isTweening()) renderer.render(scene, camera).
+Special Modes
+	•	Zen/Sand giant tube: TubeGroup with isGiant = true; uses a single BoxGeometry(0.48, GIANT_HEIGHT, 0.48) with vertexColors: true buffer attribute rebuilt from zenTube/sandTube array on each syncToState
+	•	Gravity flip: animGravityFlip(allTubeGroups, onMidpoint) coordinates fade + array reversal + fade-back using gsap.delayedCall
+	•	Day/Night: SceneManager.setNightMode() lerps light colors; CSS handles overlay styling
+Performance Guards
+	•	Liquid layers: InstancedMesh for up to 60 layer slots (15 tubes × 4 layers) — reduces draw calls from ~60 to ~1
+	•	Dirty flag: let needsRender = true set whenever state changes; animate loop skips renderer.render when no updates
+	•	Pixel ratio capped at 2: renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
+	•	Mobile glass fallback: detect navigator.maxTouchPoints > 0 → skip transmission, use plain opacity
+
+
+Migration Sequence (7 Phases)
+Each phase leaves the game runnable.
+Phase 0 — Scaffolding (no visual change)
+	1.	Add package.json with vite, three, gsap as deps
+	2.	Add vite.config.js
+	3.	Move favicon.png, icon.png, manifest.json, robots.txt, service-worker.js → public/
+	4.	Copy <script> block from index.html verbatim to src/main.js; replace with <script type="module" src="/src/main.js">
+	5.	Verify vite dev plays the game identically
+Phase 1 — Module extraction (no visual change)
+Extract in order from index.html/main.js into separate modules, each re-exported and imported:
+constants.js → state.js → audio.js → palette.js → levels.js → logic.js → ui.js → renderer.js
+Phase 2 — Three.js scaffold (canvas behind DOM, no tubes yet)
+	1.	Add <canvas id="three-canvas"> to index.html (position: fixed; z-index: 0; pointer-events: none)
+	2.	Write SceneManager.js: renderer, isometric camera, lights, animate loop
+	3.	Write stub BoardLayout.js
+	4.	Import and init in main.js
+Phase 3 — Tube mesh builder and static display (both renderers active)
+	1.	Write TubeMeshBuilder.js, TubeGroup.js
+	2.	Add SceneManager.buildBoard(numTubes, gridCols) — creates and positions TubeGroup instances
+	3.	Call syncAllTubeGroups() from existing render() — DOM and 3D update together
+Phase 4 — Animation and interaction bridge (both renderers)
+	1.	Write AnimationSystem.js, Interaction.js
+	2.	Shim animTube(idx, cls) to route to both DOM class add AND AnimationSystem.animXxx(tubeGroupMap[idx])
+	3.	Wire triggerGravityFlip similarly
+Phase 5 — Cutover (Three.js becomes sole renderer)
+	1.	Replace render() body in renderer.js: call only syncAllTubeGroups(), no DOM tube manipulation
+	2.	Remove #tubes-area from index.html; remove tube-related CSS
+	3.	Enable pointer-events: auto on canvas in Interaction.js
+	4.	Remove DOM path from animation shim
+Phase 6 — Polish and special modes
+	1.	Implement giant tube TubeGroup variant (Zen/Sand vertex-color fill)
+	2.	Implement animGravityFlip
+	3.	SceneManager.setNightMode() wired to toggleNightMode()
+	4.	Tune frustum sizing, tube scale, spacing
+	5.	Add hover animation (pointerenter → GSAP Y lift)
+Phase 7 — Build and deploy
+	1.	vite build → dist/ static site
+	2.	Update service-worker.js asset list for new chunk filenames
+
