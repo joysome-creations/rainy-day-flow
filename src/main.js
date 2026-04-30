@@ -2,18 +2,23 @@ import { initNightMode, toggleNightMode, updateSOSBtn, mascotSad, updateRestartB
 import { toggleSound } from './audio.js';
 import { loadLevel, restartLevel, LEVEL_CONFIGS } from './levels.js';
 import { handleTubeClick } from './logic.js';
-import { setClickHandler, render } from './renderer.js';
+import { animTube, render, rebuildBoard } from './renderer.js';
 import { setState, pushSnapshot } from './state.js';
 import * as state from './state.js';
 import { SOS_MAX } from './constants.js';
 import { playPour, playSOS } from './audio.js';
+import { initScene, getTubeGroups } from './scene/SceneManager.js';
+import { initInteraction } from './scene/Interaction.js';
+import { animShake } from './scene/AnimationSystem.js';
 
-// Wire click handler into renderer (breaks circular dep between renderer↔logic)
-setClickHandler(handleTubeClick);
+// ─── Init Three.js scene ──────────────────────────────────────────────────────
+const canvas = document.getElementById('three-canvas');
+initScene(canvas);
+initInteraction(canvas, handleTubeClick);
 
-// ─── Button handlers exposed to HTML onclick ──────────────────────
-window.loadLevel = loadLevel;
-window.toggleSound = toggleSound;
+// ─── Button handlers exposed to HTML onclick ──────────────────────────────────
+window.loadLevel     = loadLevel;
+window.toggleSound   = toggleSound;
 window.toggleNightMode = toggleNightMode;
 
 window.restartOrNew = function() {
@@ -35,8 +40,8 @@ window.undoMove = function() {
     won: false,
   });
   if (state.gravityMode) setState({ movesSinceFlip: snap.movesSinceFlip });
-  if (state.zenMode)    setState({ zenTube: [...snap.zenTube] });
-  if (state.sandMode)   setState({ sandTube: [...snap.sandTube] });
+  if (state.zenMode)     setState({ zenTube: [...snap.zenTube] });
+  if (state.sandMode)    setState({ sandTube: [...snap.sandTube] });
   document.getElementById('move-count').textContent = state.moves;
   setMsg(''); render(); updateRestartBtn(); updateSOSBtn();
 };
@@ -46,16 +51,14 @@ window.triggerSOS = function() {
   pushSnapshot();
   setState({ sosUsed: state.sosUsed + 1 });
   state.tubes.push([]);
+  rebuildBoard();   // board gained a tube
   render();
-  document.querySelectorAll('.tube-wrapper').forEach(w => {
-    w.classList.remove('gravity-shaking'); void w.offsetWidth; w.classList.add('gravity-shaking');
-    w.addEventListener('animationend', () => w.classList.remove('gravity-shaking'), {once:true});
-  });
+  getTubeGroups().forEach(tg => animShake(tg.group));
   playSOS();
   mascotSad();
   updateSOSBtn();
 };
 
-// ─── Init ─────────────────────────────────────────────────────────
+// ─── Init ─────────────────────────────────────────────────────────────────────
 initNightMode();
 loadLevel(0);

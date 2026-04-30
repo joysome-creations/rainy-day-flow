@@ -1,6 +1,7 @@
 import { PALETTE, SOS_MAX } from './constants.js';
 import * as state from './state.js';
 import { setState } from './state.js';
+import { setNightMode as _setNightMode3D } from './scene/SceneManager.js';
 
 // ─── Night mode ───────────────────────────────────────────────────
 export function initNightMode() {
@@ -10,6 +11,7 @@ export function initNightMode() {
       document.body.classList.add('night-mode');
       const b = document.getElementById('night-btn');
       if (b) b.textContent = '☀ Day';
+      _setNightMode3D(true);
     }
   } catch(e) {}
 }
@@ -19,6 +21,7 @@ export function toggleNightMode() {
   setState({ nightModeOn: on });
   document.body.classList.toggle('night-mode', on);
   document.getElementById('night-btn').textContent = on ? '☀ Day' : '☽ Night';
+  _setNightMode3D(on);
   try { localStorage.setItem('nightMode', on ? '1' : '0'); } catch(e) {}
 }
 
